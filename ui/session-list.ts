@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_INTERCOM_GROUP } from "../config.ts";
 import type { SessionInfo } from "../types.ts";
 
 function middleTruncate(text: string, maxWidth: number): string {
@@ -35,7 +36,9 @@ function shortSessionId(sessionId: string): string {
 
 function sessionTitle(session: SessionInfo, options?: { self?: boolean; sameCwd?: boolean }): string {
   const name = session.name || "Unnamed session";
-  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
+  const group = session.group?.trim();
+  const groupTag = group && group !== DEFAULT_INTERCOM_GROUP ? `group:${group}` : undefined;
+  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined, groupTag]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `${name} (${shortSessionId(session.id)})${suffix}`;

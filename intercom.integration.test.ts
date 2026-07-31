@@ -3819,3 +3819,134 @@ test("failed delivery from an inferred reply preserves the pending ask", { concu
     await cleanup();
   }
 });
+
+function baseSession(name: string, group?: string) {
+  return {
+    name,
+    cwd: repoDir,
+    model: "test-model",
+    pid: process.pid,
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+    ...(group !== undefined ? { group } : {}),
+  };
+}
+
+test("broker group isolation: same-group list/send/joined work; cross-group looks absent", { concurrency: false }, async () => {
+  const broker = spawn(process.execPath, [getTsxCliPath(), path.join(repoDir, "broker", "broker.ts")], {
+    cwd: repoDir,
+    env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const teamA1 = new IntercomClient();
+  const teamA2 = new IntercomClient();
+  const teamB = new IntercomClient();
+  const defaultGroup = new IntercomClient();
+
+  try {
+    await waitForBrokerReady(broker);
+
+    const joinedA1: SessionInfo[] = [];
+    const joinedB: SessionInfo[] = [];
+    const leftA1: string[] = [];
+    const leftB: string[] = [];
+    teamA1.on("session_joined", (session: SessionInfo) => joinedA1.push(session));
+    teamB.on("session_joined", (session: SessionInfo) => joinedB.push(session));
+    teamA1.on("session_left", (sessionId: string) => leftA1.push(sessionId));
+    teamB.on("session_left", (sessionId: string) => leftB.push(sessionId));
+
+    await teamA1.connect(baseSession("a1", "teamA"));
+    await teamA2.connect(baseSession("a2", "teamA"));
+    await teamB.connect(baseSession("b1", "teamB"));
+    await defaultGroup.connect(baseSession("default-peer"));
+
+    const a1Sessions = await teamA1.listSessions();
+    assert.deepEqual(a1Sessions.map((s) => s.name).sort(), ["a1", "a2"]);
+    assert.ok(a1Sessions.every((s) => s.group === "teamA"));
+
+    const bSessions = await teamB.listSessions();
+    assert.deepEqual(bSessions.map((s) => s.name), ["b1"]);
+    assert.equal(bSessions[0]?.group, "teamB");
+
+    const defaultSessions = await defaultGroup.listSessions();
+    assert.deepEqual(defaultSessions.map((s) => s.name), ["default-peer"]);
+    assert.equal(defaultSessions[0]?.group, "default");
+
+    const sameGroupSend = await teamA1.send("a2", { text: "hello teammate" });
+    assert.equal(sameGroupSend.delivered, true);
+
+    const crossByName = await teamA1.send("b1", { text: "nope" });
+    assert.equal(crossByName.delivered, false);
+    assert.equal(crossByName.reason, "Session not found");
+
+    const crossById = await teamA1.send(teamB.sessionId!, { text: "nope id" });
+    assert.equal(crossById.delivered, false);
+    assert.equal(crossById.reason, "Session not found");
+
+    const defaultToA = await defaultGroup.send("a1", { text: "cross default" });
+    assert.equal(defaultToA.delivered, false);
+    assert.equal(defaultToA.reason, "Session not found");
+    const aToDefault = await teamA1.send("default-peer", { text: "cross named" });
+    assert.equal(aToDefault.delivered, false);
+    assert.equal(aToDefault.reason, "Session not found");
+
+    assert.ok(joinedA1.some((s) => s.name === "a2" && s.group === "teamA"));
+    assert.equal(joinedA1.some((s) => s.name === "b1"), false);
+    assert.equal(joinedA1.some((s) => s.name === "default-peer"), false);
+    assert.equal(joinedB.some((s) => s.name === "a1" || s.name === "a2"), false);
+
+    const a2Id = teamA2.sessionId!;
+    await teamA2.disconnect();
+    await waitForNoSessionId(teamA1, a2Id);
+    assert.ok(leftA1.includes(a2Id));
+    assert.equal(leftB.includes(a2Id), false);
+  } finally {
+    await teamA1.disconnect().catch(() => undefined);
+    await teamA2.disconnect().catch(() => undefined);
+    await teamB.disconnect().catch(() => undefined);
+    await defaultGroup.disconnect().catch(() => undefined);
+    broker.kill("SIGTERM");
+    await once(broker, "exit").catch(() => undefined);
+  }
+});
+
+test("broker group isolation: presence updates stay inside the group", { concurrency: false }, async () => {
+  const broker = spawn(process.execPath, [getTsxCliPath(), path.join(repoDir, "broker", "broker.ts")], {
+    cwd: repoDir,
+    env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const teamA1 = new IntercomClient();
+  const teamA2 = new IntercomClient();
+  const teamB = new IntercomClient();
+
+  try {
+    await waitForBrokerReady(broker);
+    await teamA1.connect(baseSession("pa1", "teamA"));
+    await teamA2.connect(baseSession("pa2", "teamA"));
+    await teamB.connect(baseSession("pb1", "teamB"));
+
+    const presenceA2: SessionInfo[] = [];
+    const presenceB: SessionInfo[] = [];
+    teamA2.on("presence_update", (session: SessionInfo) => presenceA2.push(session));
+    teamB.on("presence_update", (session: SessionInfo) => presenceB.push(session));
+
+    teamA1.updatePresence({ status: "busy-a" });
+    await teamA1.send("pa2", { text: "flush" });
+    await waitForSessionStatus(teamA2, "pa1", "busy-a");
+
+    assert.ok(presenceA2.some((s) => s.name === "pa1" && s.status === "busy-a"));
+    assert.equal(presenceB.some((s) => s.name === "pa1"), false);
+
+    const bList = await teamB.listSessions();
+    assert.equal(bList.find((s) => s.name === "pa1"), undefined);
+  } finally {
+    await teamA1.disconnect().catch(() => undefined);
+    await teamA2.disconnect().catch(() => undefined);
+    await teamB.disconnect().catch(() => undefined);
+    broker.kill("SIGTERM");
+    await once(broker, "exit").catch(() => undefined);
+  }
+});

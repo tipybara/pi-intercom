@@ -23,6 +23,8 @@ export interface SessionInfo {
   startedAt: number;
   lastActivity: number;
   status?: string;
+  /** Optional isolation group. Sessions only see/message peers in the same group. */
+  group?: string;
   peerUid?: number;
   trustedLocal?: boolean;
   /** Live context-window usage, pushed via presence from the source session's

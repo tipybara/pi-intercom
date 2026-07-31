@@ -64,3 +64,17 @@ test("session list overlay renders lines at the declared overlay width", () => {
     assertLineWidths("session list overlay", overlay.render(width), width);
   }
 });
+
+test("session list overlay shows non-default group tag", () => {
+  const grouped: SessionInfo = { ...session, group: "teamA" };
+  const overlay = new SessionListOverlay(theme as any, keybindings as any, grouped, [grouped], () => {});
+  const text = overlay.render(88).join("\n");
+  assert.match(text, /group:teamA/);
+});
+
+test("session list overlay hides default group tag", () => {
+  const grouped: SessionInfo = { ...session, group: "default" };
+  const overlay = new SessionListOverlay(theme as any, keybindings as any, grouped, [grouped], () => {});
+  const text = overlay.render(88).join("\n");
+  assert.equal(text.includes("group:"), false);
+});

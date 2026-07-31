@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getConfigPath, loadConfig } from "./config.ts";
+import { DEFAULT_INTERCOM_GROUP, getConfigPath, getIntercomGroup, loadConfig } from "./config.ts";
 
 async function withAgentDir<T>(agentDir: string, fn: () => T | Promise<T>): Promise<T> {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -71,6 +71,17 @@ test("loadConfig accepts a restart-stable intercom id", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("getIntercomGroup defaults when unset or blank", () => {
+  assert.equal(getIntercomGroup({}), DEFAULT_INTERCOM_GROUP);
+  assert.equal(getIntercomGroup({ PI_INTERCOM_GROUP: "" }), DEFAULT_INTERCOM_GROUP);
+  assert.equal(getIntercomGroup({ PI_INTERCOM_GROUP: "   " }), DEFAULT_INTERCOM_GROUP);
+});
+
+test("getIntercomGroup trims non-empty values", () => {
+  assert.equal(getIntercomGroup({ PI_INTERCOM_GROUP: "teamA" }), "teamA");
+  assert.equal(getIntercomGroup({ PI_INTERCOM_GROUP: "  teamB  " }), "teamB");
 });
 
 test("loadConfig rejects invalid inboundTrigger values", async () => {

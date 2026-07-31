@@ -8,7 +8,7 @@ import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
-import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.ts";
+import { DEFAULT_INTERCOM_GROUP, getAskTimeoutMs, getIntercomGroup, loadConfig, type IntercomConfig } from "./config.ts";
 import { EXTENSION_BUS_FEATURE } from "./types.ts";
 import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.ts";
 import {
@@ -465,10 +465,21 @@ function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): stri
     ? `${session.name} (${session.id.slice(0, 8)})`
     : session.name;
 }
+function formatSessionGroupTag(session: SessionInfo): string | undefined {
+  const group = session.group?.trim();
+  if (!group || group === DEFAULT_INTERCOM_GROUP) {
+    return undefined;
+  }
+  return `group:${group}`;
+}
+
 function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean, idPrefix: string): string {
   const name = session.name || "Unnamed session";
-  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status]
-    .filter((tag): tag is string => Boolean(tag));
+  const tags = [
+    isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined,
+    formatSessionGroupTag(session),
+    session.status,
+  ].filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   const pane = session.tmuxPane ? ` · tmux ${session.tmuxPane}` : "";
   return `• ${name} (${idPrefix}) — ${session.cwd} (${session.model}${formatContextUsage(session)}${pane})${suffix}`;
@@ -800,6 +811,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
+      group: getIntercomGroup(),
       ...(tmuxPane ? { tmuxPane } : {}),
       ...(localExtensions.size > 0
         ? {

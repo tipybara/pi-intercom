@@ -3,6 +3,8 @@ import { join } from "path";
 import { getIntercomDirPath } from "./broker/paths.ts";
 
 const DEFAULT_ASK_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_INTERCOM_GROUP = "default";
+export const INTERCOM_GROUP_ENV = "PI_INTERCOM_GROUP";
 
 export function getAskTimeoutMs(): number {
   const raw = process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
@@ -15,6 +17,14 @@ export function getAskTimeoutMs(): number {
     throw new Error("PI_INTERCOM_ASK_TIMEOUT_MS must be a positive integer number of milliseconds");
   }
   return value;
+}
+
+export function getIntercomGroup(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env[INTERCOM_GROUP_ENV];
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_INTERCOM_GROUP;
+  }
+  return raw.trim();
 }
 
 export type InboundTriggerPolicy = "always" | "replies" | "never";

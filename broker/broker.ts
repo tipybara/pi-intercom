@@ -16,7 +16,7 @@ import {
   restrictIntercomRuntimeFile,
   type BrokerConnectTarget,
 } from "./paths.ts";
-import { getAskTimeoutMs } from "../config.ts";
+import { DEFAULT_INTERCOM_GROUP, getAskTimeoutMs } from "../config.ts";
 import { sameCwd } from "../cwd.ts";
 import { EXACT_SEND_FEATURE, EXTENSION_BUS_FEATURE } from "../types.ts";
 import type { DeliveryState, SessionInfo, Message, BrokerMessage, ExtensionCapability, MessageControl } from "../types.ts";
@@ -120,6 +120,13 @@ interface MailboxMessage {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveSessionGroup(group: string | undefined): string {
+  if (group === undefined || group.trim() === "") {
+    return DEFAULT_INTERCOM_GROUP;
+  }
+  return group.trim();
 }
 
 function isPendingAskRecord(value: unknown): value is PendingAskRecord {
@@ -271,10 +278,11 @@ class IntercomBroker {
       if (sessionId) {
         const existing = this.sessions.get(sessionId);
         if (existing?.socket === socket) {
+          const group = existing.info.group ?? DEFAULT_INTERCOM_GROUP;
           this.rememberDisconnectedSession(existing.info);
           this.sessions.delete(sessionId);
           this.clearMessageReceiptRoutesForSession(sessionId);
-          this.broadcast({ type: "session_left", sessionId }, sessionId);
+          this.broadcast({ type: "session_left", sessionId }, { exclude: sessionId, group });
           this.recomputeNamespaceOwners();
           this.scheduleShutdownCheck();
         }
@@ -409,6 +417,7 @@ class IntercomBroker {
           previous.socket.end();
         }
         setId(id);
+        const group = resolveSessionGroup(session.group);
         const info: SessionInfo = {
           id,
           endpointEpoch: randomUUID(),
@@ -420,6 +429,7 @@ class IntercomBroker {
           startedAt: session.startedAt,
           lastActivity: session.lastActivity,
           ...(session.status !== undefined ? { status: session.status } : {}),
+          group,
           ...(session.tmuxPane !== undefined ? { tmuxPane: session.tmuxPane } : {}),
           trustedLocal: typeof LISTEN_TARGET === "string" && process.platform !== "win32",
         };
@@ -447,7 +457,7 @@ class IntercomBroker {
           sessionId: id,
           features: [EXTENSION_BUS_FEATURE, EXACT_SEND_FEATURE],
         });
-        this.broadcast({ type: "session_joined", session: info }, id);
+        this.broadcast({ type: "session_joined", session: info }, { exclude: id, group });
 
         this.recomputeNamespaceOwners();
         this.flushMailboxForSession(connectedSession);
@@ -480,10 +490,11 @@ class IntercomBroker {
         }
         const existing = this.sessions.get(currentId);
         if (existing?.socket === socket) {
+          const group = existing.info.group ?? DEFAULT_INTERCOM_GROUP;
           this.rememberDisconnectedSession(existing.info);
           this.sessions.delete(currentId);
           this.clearMessageReceiptRoutesForSession(currentId);
-          this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
+          this.broadcast({ type: "session_left", sessionId: currentId }, { exclude: currentId, group });
           this.recomputeNamespaceOwners();
           this.scheduleShutdownCheck();
         }
@@ -535,7 +546,10 @@ class IntercomBroker {
           throw new Error("Invalid list message");
         }
 
-        const sessions = Array.from(this.sessions.values()).map(s => s.info);
+        const requesterGroup = this.sessions.get(currentId)?.info.group ?? DEFAULT_INTERCOM_GROUP;
+        const sessions = Array.from(this.sessions.values())
+          .map(s => s.info)
+          .filter(info => (info.group ?? DEFAULT_INTERCOM_GROUP) === requesterGroup);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
@@ -556,6 +570,7 @@ class IntercomBroker {
         this.pruneAskEdges();
         this.pruneMessageReceiptRoutes(brokerReceivedAt);
         const replyEdge = message.replyTo ? this.askEdges.get(message.replyTo) : undefined;
+        const senderGroup = this.sessions.get(currentId)?.info.group ?? DEFAULT_INTERCOM_GROUP;
 
         const hasTargetId = clientMessage.targetId !== undefined;
         const hasTargetEpoch = clientMessage.targetEpoch !== undefined;
@@ -575,7 +590,7 @@ class IntercomBroker {
             break;
           }
           const exactTarget = this.sessions.get(targetId);
-          if (!exactTarget || exactTarget.info.endpointEpoch !== targetEpoch) {
+          if (!exactTarget || exactTarget.info.endpointEpoch !== targetEpoch || !this.sameGroup(exactTarget.info, senderGroup)) {
             this.recordDelivery(currentId, message.id, fingerprint, "failed", "Target endpoint changed before delivery", "E_TARGET_REBOUND", true);
             this.writeDeliveryFailure(socket, message.id, "Target endpoint changed before delivery", "E_TARGET_REBOUND", true);
             break;
@@ -583,7 +598,7 @@ class IntercomBroker {
           clientMessage.to = targetId;
         }
 
-        const targets = this.findSessions(clientMessage.to);
+        const targets = this.findSessions(clientMessage.to, senderGroup);
         if (targets.length === 1) {
           if (message.replyTo && !replyEdge) {
             this.writeDeliveryFailure(socket, message.id, "Reply target does not match a pending ask", "E_REPLY_TARGET");
@@ -658,7 +673,7 @@ class IntercomBroker {
           break;
         }
 
-        const disconnectedTargets = this.findDisconnectedSessions(clientMessage.to);
+        const disconnectedTargets = this.findDisconnectedSessions(clientMessage.to, senderGroup);
         if (disconnectedTargets.length === 1) {
           if (message.replyTo && !replyEdge) {
             this.writeDeliveryFailure(socket, message.id, "Reply target does not match a pending ask", "E_REPLY_TARGET");
@@ -888,7 +903,10 @@ class IntercomBroker {
           session.info.lastActivity = now;
           if (changed || now - session.lastPresenceBroadcastAt >= PRESENCE_HEARTBEAT_MS) {
             session.lastPresenceBroadcastAt = now;
-            this.broadcast({ type: "presence_update", session: session.info }, currentId);
+            this.broadcast(
+              { type: "presence_update", session: session.info },
+              { exclude: currentId, group: session.info.group ?? DEFAULT_INTERCOM_GROUP },
+            );
           }
         }
         break;
@@ -1036,11 +1054,17 @@ class IntercomBroker {
 
   private flushMailboxForSession(session: ConnectedSession, now = Date.now()): void {
     this.pruneMailboxMessages(now);
+    const sessionGroup = session.info.group ?? DEFAULT_INTERCOM_GROUP;
     const sessionName = session.info.name?.toLowerCase();
     const uniqueMailboxIdentity = this.findLiveSessionsSharingMailboxIdentity(session.info).length === 1;
 
     for (let index = 0; index < this.mailboxMessages.length;) {
       const entry = this.mailboxMessages[index]!;
+      const entryGroup = entry.target.group ?? entry.from.group ?? DEFAULT_INTERCOM_GROUP;
+      if (entryGroup !== sessionGroup) {
+        index += 1;
+        continue;
+      }
       const matchesId = entry.target.id === session.info.id;
       const matchesSenderIdentity = Boolean(
         sessionName
@@ -1163,38 +1187,46 @@ class IntercomBroker {
     }
   }
 
-  private findSessions(nameOrId: string): ConnectedSession[] {
+  private sameGroup(info: SessionInfo | undefined, group: string): boolean {
+    return (info?.group ?? DEFAULT_INTERCOM_GROUP) === group;
+  }
+
+  private findSessions(nameOrId: string, group: string): ConnectedSession[] {
     const byId = this.sessions.get(nameOrId);
     if (byId) {
-      return [byId];
+      return this.sameGroup(byId.info, group) ? [byId] : [];
     }
 
     const lowerName = nameOrId.toLowerCase();
-    const byName = Array.from(this.sessions.values()).filter(session => session.info.name?.toLowerCase() === lowerName);
+    const byName = Array.from(this.sessions.values()).filter(session =>
+      session.info.name?.toLowerCase() === lowerName && this.sameGroup(session.info, group)
+    );
     if (byName.length > 0) {
       return byName;
     }
 
     return Array.from(this.sessions.entries())
-      .filter(([id]) => id.startsWith(nameOrId))
+      .filter(([id, session]) => id.startsWith(nameOrId) && this.sameGroup(session.info, group))
       .map(([, session]) => session);
   }
 
-  private findDisconnectedSessions(nameOrId: string): DisconnectedSession[] {
+  private findDisconnectedSessions(nameOrId: string, group: string): DisconnectedSession[] {
     this.pruneDisconnectedSessions();
     const byId = this.disconnectedSessions.get(nameOrId);
     if (byId) {
-      return [byId];
+      return this.sameGroup(byId.info, group) ? [byId] : [];
     }
 
     const lowerName = nameOrId.toLowerCase();
-    const byName = Array.from(this.disconnectedSessions.values()).filter(session => session.info.name?.toLowerCase() === lowerName);
+    const byName = Array.from(this.disconnectedSessions.values()).filter(session =>
+      session.info.name?.toLowerCase() === lowerName && this.sameGroup(session.info, group)
+    );
     if (byName.length > 0) {
       return byName;
     }
 
     return Array.from(this.disconnectedSessions.entries())
-      .filter(([id]) => id.startsWith(nameOrId))
+      .filter(([id, session]) => id.startsWith(nameOrId) && this.sameGroup(session.info, group))
       .map(([, session]) => session);
   }
 
@@ -1220,18 +1252,24 @@ class IntercomBroker {
     if (!lowerName || info.runtimeFallbackAlias) {
       return [];
     }
+    const group = info.group ?? DEFAULT_INTERCOM_GROUP;
     return Array.from(this.sessions.values()).filter(session =>
       !session.info.runtimeFallbackAlias
       && session.info.name?.toLowerCase() === lowerName
       && sameCwd(session.info.cwd, info.cwd)
+      && this.sameGroup(session.info, group)
     );
   }
 
-  private broadcast(msg: BrokerMessage, exclude?: string): void {
+  private broadcast(msg: BrokerMessage, options?: { exclude?: string; group?: string }): void {
     for (const [id, session] of this.sessions) {
-      if (id !== exclude) {
-        writeMessage(session.socket, msg);
+      if (options?.exclude !== undefined && id === options.exclude) {
+        continue;
       }
+      if (options?.group !== undefined && !this.sameGroup(session.info, options.group)) {
+        continue;
+      }
+      writeMessage(session.socket, msg);
     }
   }
 
