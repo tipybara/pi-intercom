@@ -51,7 +51,7 @@ test("expanded inline intercom messages show the full body without collapse cont
   assert.doesNotMatch(rendered, /Ctrl\+O/);
 });
 
-test("collapsed inline intercom messages keep preview, reply hint, and expand key visible", () => {
+test("collapsed inline intercom messages are a single quiet preview line", () => {
   const component = new InlineMessageComponent(
     from,
     {
@@ -67,16 +67,14 @@ test("collapsed inline intercom messages keep preview, reply hint, and expand ke
     true,
   );
 
-  const lines = component.render(120);
+  const lines = component.render(72);
   const rendered = lines.join("\n");
 
-  assert.equal(lines.length, 4);
-  for (const line of lines) assert.equal(visibleWidth(line), 120);
-  assert.match(rendered, /Alpha beta gamma/);
+  assert.equal(lines.length, 1);
+  assert.ok(visibleWidth(lines[0]!) <= 72);
+  assert.match(rendered, /^> sender {2}Alpha beta gamma/);
   assert.doesNotMatch(rendered, /intentionally brief/);
-  assert.match(rendered, /To reply: intercom/);
-  assert.match(rendered, /Ctrl\+O/);
-  assert.match(rendered, /1 attachment/);
+  assert.doesNotMatch(rendered, /From:|Ctrl\+O|╭|╰|To reply|attachment/);
 });
 
 const roleCodes = {
@@ -134,9 +132,9 @@ test("collapsed inline messages preserve the same hierarchy without accent", () 
 
   const rendered = component.render(72).join("\n");
 
-  assert.match(rendered, /\u001b\[32m From:/);
+  assert.match(rendered, /\u001b\[34m>\u001b\[0m \u001b\[32msender\u001b\[0m/);
   assert.match(rendered, /\u001b\[33mThis is a long message/);
-  assert.match(rendered, /\u001b\[35m To reply:/);
+  assert.doesNotMatch(rendered, /From:|Ctrl\+O|╭/);
   assert.ok(!calls.includes("accent"));
 });
 

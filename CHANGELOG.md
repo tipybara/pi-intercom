@@ -10,6 +10,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - Added tmux pane IDs to the roster. Thanks to [@odfalik](https://github.com/odfalik) for issue #102 and PR #101.
 
 ### Changed
+- Collapsed inbound messages render as a single `> name  preview` line instead of a full-width card.
 - Clarified that agents should re-list stale intercom session IDs and skip self-targets.
 
 ## [0.10.1] - 2026-08-12

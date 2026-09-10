@@ -59,20 +59,10 @@ export class InlineMessageComponent implements Component {
 
     if (this.collapsed) {
       this.collapsedPreview ??= (this.bodyText || this.message.content.text).replace(/\s+/g, " ").trim();
-      lines.push(frameLine(this.theme.fg("text", this.collapsedPreview)));
-
-      const meta: string[] = [];
-      if (this.replyCommand) meta.push(`To reply: ${this.replyCommand}`);
-      if (this.message.content.attachments?.length) {
-        const count = this.message.content.attachments.length;
-        meta.push(`${count} attachment${count === 1 ? "" : "s"}`);
-      }
-      if (this.message.replyTo && !this.message.expectsReply) meta.push(`Reply to ${this.message.replyTo.slice(0, 8)}`);
-      meta.push("Ctrl+O to expand");
-
-      lines.push(frameLine(this.theme.fg("dim", ` ${meta.join(" · ")}`)));
-      lines.push(this.theme.fg("muted", `╰${borderChar.repeat(bodyWidth)}╯`));
-      return lines;
+      const prefix = `${this.theme.fg("muted", ">")} ${this.theme.fg("toolTitle", senderName)}  `;
+      const room = Math.max(1, width - visibleWidth(prefix));
+      const preview = truncateToWidth(this.theme.fg("text", this.collapsedPreview), room, "…");
+      return [truncateToWidth(prefix + preview, width, "")];
     }
 
     if (this.wrappedBody?.width !== bodyWidth) {
